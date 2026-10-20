@@ -8,13 +8,15 @@
   <style>
     :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #08090b; color: #f7f7f8; }
     * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
     html, body { width: 100%; min-height: 100%; margin: 0; }
     body { min-height: 100svh; min-height: 100dvh; overflow: hidden; }
     button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
     .app { position: relative; width: 100%; height: 100svh; height: 100dvh; min-height: 420px; overflow: hidden; background: #08090b; }
     .preview { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, #20232a 0, #101115 42%, #08090b 78%); }
+    .camera-source { position: absolute; inset: 0; z-index: 0; display: block; width: 100%; height: 100%; object-fit: cover; opacity: .01; pointer-events: none; }
+    .preview::after { position: absolute; inset: 0; z-index: 1; background: #08090b; content: ""; }
     .camera-icon { display: grid; place-items: center; width: 112px; height: 112px; border: 1px solid #ffffff26; border-radius: 50%; color: #ffffffa6; background: #ffffff0a; }
-    .camera-source { position: fixed; left: -2px; bottom: 0; width: 1px; height: 1px; opacity: .01; pointer-events: none; }
     .placeholder { position: absolute; max-width: 290px; padding: 24px; text-align: center; color: #c1c2c8; line-height: 1.7; }
     .placeholder strong { display: block; margin-bottom: 6px; color: white; font-size: 18px; }
     .topbar { position: absolute; inset: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: max(18px, env(safe-area-inset-top)) 20px 18px; background: linear-gradient(#0008, transparent); }
@@ -48,7 +50,8 @@
 <body>
   <main class="app">
     <section class="preview" aria-label="カメラプレビュー">
-      <div class="placeholder" id="placeholder"><span class="camera-icon" aria-hidden="true"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 7.5h3l1.4-2h7.2l1.4 2h3a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-16A1.5 1.5 0 0 1 2.5 18V9A1.5 1.5 0 0 1 4 7.5Z"/><circle cx="12" cy="13" r="4"/></svg></span><strong>写真を撮影</strong>ボタンを押すとカメラを起動して撮影し、写真を保存します。</div>
+      <video id="captureVideo" class="camera-source" autoplay playsinline muted aria-hidden="true"></video>
+      <div class="placeholder" id="placeholder"><span class="camera-icon" aria-hidden="true"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M4 7.5h3l1.4-2h7.2l1.4 2h3a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-16A1.5 1.5 0 0 1 2.5 18V9A1.5 1.5 0 0 1 4 7.5Z"/><circle cx="12" cy="13" r="4"/></svg></span><strong>写真を撮影</strong>ボタンを押すとカメラ映像から写真を作成し、保存します。</div>
     </section>
     <header class="topbar">
       <div class="brand">Camera</div>
@@ -58,15 +61,13 @@
     <footer class="bottom">
       <p class="hint" id="hint">撮影した写真・動画はこの端末に保存されます</p>
       <div class="controls">
+        <button class="capture" id="photoButton" type="button" aria-label="写真を撮影"><span></span></button>
         <button class="tool" id="switchButton" type="button" aria-label="前面・背面カメラを切り替え">
           <span class="tool-icon"><span class="switch-icon">↻</span></span><span class="tool-label" id="cameraLabel">背面カメラ</span>
         </button>
-        <button class="capture" id="photoButton" type="button" aria-label="写真を撮影"><span></span></button>
-        <span class="tool" aria-hidden="true"><span class="tool-icon">JPG</span><span class="tool-label">写真保存</span></span>
       </div>
     </footer>
   </main>
-  <video id="captureVideo" class="camera-source" autoplay playsinline muted aria-hidden="true"></video>
   <canvas id="canvas" hidden></canvas>
   <script>
     (() => {
@@ -75,10 +76,10 @@
       const statusText = document.querySelector('#statusText');
       const hint = document.querySelector('#hint');
       const toast = document.querySelector('#toast');
-      const captureVideo = document.querySelector('#captureVideo');
+      const video = document.querySelector('#captureVideo');
       const canvas = document.querySelector('#canvas');
-      let stream = null;
       let facingMode = 'environment';
+      let busy = false;
       let toastTimer;
 
       function notify(message) {
@@ -88,42 +89,11 @@
         toastTimer = setTimeout(() => toast.classList.remove('show'), 3600);
       }
 
-      async function openCamera() {
-        if (!navigator.mediaDevices?.getUserMedia) {
-          notify('カメラAPIを利用できません。SafariではHTTPSまたはlocalhostで開いてください。');
-          throw new Error('camera-api-unavailable');
-        }
-        if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-          notify('このページは安全な接続ではありません。HTTPSまたはlocalhostで開いてください。');
-          throw new Error('insecure-context');
-        }
-        try {
-          return await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }
-          });
-        } catch (firstError) {
-          if (firstError.name === 'OverconstrainedError' || firstError.name === 'NotFoundError') {
-            try { return await navigator.mediaDevices.getUserMedia({ audio: false, video: true }); }
-            catch (error) { firstError = error; }
-          }
-          const message = firstError.name === 'NotAllowedError'
-            ? 'カメラ権限がありません。iPhoneの設定とSafariのWebサイト設定でカメラを許可してください。'
-            : firstError.name === 'NotFoundError'
-              ? '利用できるカメラが見つかりませんでした。'
-              : firstError.name === 'SecurityError'
-                ? 'HTTPSのページで開いてください。'
-                : `カメラを起動できませんでした（${firstError.name || 'unknown'}）。`;
-          notify(message);
-          throw firstError;
-        }
-      }
-
-      function saveBlob(blob, filename) {
+      function savePhoto(blob) {
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = filename;
+        link.download = `photo-${timestamp()}.jpg`;
         link.style.display = 'none';
         document.body.append(link);
         link.click();
@@ -137,81 +107,113 @@
         return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
       }
 
-      function captureFromStream(activeStream) {
+      async function captureFrame() {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error('このブラウザではカメラAPIを利用できません。HTTPSのSafariで開いてください。');
+        }
+        if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+          throw new Error('カメラにはHTTPS接続が必要です。');
+        }
+
+        let cameraStream;
+        try {
+          try {
+            cameraStream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: { facingMode: { ideal: facingMode } }
+            });
+          } catch (firstError) {
+            if (firstError.name !== 'OverconstrainedError' && firstError.name !== 'NotFoundError') throw firstError;
+            cameraStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+          }
+
+          video.srcObject = cameraStream;
+          video.muted = true;
+          video.playsInline = true;
+          video.setAttribute('playsinline', '');
+          await video.play();
+          await waitForFrame();
+
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const context = canvas.getContext('2d', { alpha: false });
+          if (facingMode === 'user') {
+            context.translate(canvas.width, 0);
+            context.scale(-1, 1);
+          }
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise((resolve, reject) => canvas.toBlob(
+            image => image ? resolve(image) : reject(new Error('写真データを作成できませんでした。')),
+            'image/jpeg', 0.95
+          ));
+          return blob;
+        } catch (error) {
+          if (error.name === 'NotAllowedError') throw new Error('カメラへのアクセスを許可してください。Safariのサイト設定も確認してください。');
+          if (error.name === 'NotFoundError') throw new Error('利用できるカメラが見つかりませんでした。');
+          if (error.name === 'NotReadableError') throw new Error('カメラが他のアプリで使用中のようです。ほかのアプリを閉じて再試行してください。');
+          if (error.name === 'AbortError') throw new Error('カメラが中断されました。もう一度お試しください。');
+          throw error;
+        } finally {
+          if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
+          video.pause();
+          video.srcObject = null;
+        }
+      }
+
+      function waitForFrame() {
         return new Promise((resolve, reject) => {
-          captureVideo.autoplay = true;
-          captureVideo.muted = true;
-          captureVideo.playsInline = true;
-          captureVideo.setAttribute('playsinline', '');
-          captureVideo.srcObject = activeStream;
-          let done = false;
-          const cleanup = () => {
-            clearTimeout(timer);
-            captureVideo.pause();
-            captureVideo.srcObject = null;
-          };
-          const fail = error => {
-            if (done) return;
-            done = true;
-            cleanup();
-            reject(error);
-          };
-          const timer = setTimeout(() => fail(new Error('撮影映像の取得がタイムアウトしました。もう一度お試しください。')), 12000);
-          captureVideo.onerror = () => fail(new Error('カメラ映像を読み込めませんでした。'));
-          captureVideo.play().then(() => {
-            const waitFrame = () => {
-              if (done) return;
-              if (captureVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && captureVideo.videoWidth > 0) {
-                done = true;
-                canvas.width = captureVideo.videoWidth;
-                canvas.height = captureVideo.videoHeight;
-                const context = canvas.getContext('2d');
-                if (facingMode === 'user') {
-                  context.translate(canvas.width, 0);
-                  context.scale(-1, 1);
-                }
-                context.drawImage(captureVideo, 0, 0, canvas.width, canvas.height);
-                canvas.toBlob(blob => {
-                  cleanup();
-                  if (blob) resolve(blob);
-                  else reject(new Error('写真を作成できませんでした。'));
-                }, 'image/jpeg', 0.94);
-                return;
-              }
-              requestAnimationFrame(waitFrame);
+          const timeout = setTimeout(() => reject(new Error('カメラ映像を取得できませんでした。もう一度お試しください。')), 10000);
+          const finish = () => { clearTimeout(timeout); resolve(); };
+          if ('requestVideoFrameCallback' in video) {
+            let frameCount = 0;
+            const onFrame = () => {
+              if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) frameCount += 1;
+              if (frameCount >= 2) finish();
+              else video.requestVideoFrameCallback(onFrame);
             };
-            requestAnimationFrame(waitFrame);
-          }).catch(() => fail(new Error('Safariでカメラ映像を開始できませんでした。')));
+            video.requestVideoFrameCallback(onFrame);
+            return;
+          }
+          const initialTime = video.currentTime;
+          const checkTime = () => {
+            if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.currentTime > initialTime) {
+              finish();
+              return;
+            }
+            requestAnimationFrame(checkTime);
+          };
+          requestAnimationFrame(checkTime);
         });
       }
 
       photoButton.addEventListener('click', async () => {
+        if (busy) return;
+        busy = true;
         photoButton.disabled = true;
+        switchButton.disabled = true;
         statusText.textContent = '撮影中';
         hint.textContent = 'カメラを起動しています…';
         try {
-          if (stream) stream.getTracks().forEach(track => track.stop());
-          stream = await openCamera();
-          const blob = await captureFromStream(stream);
-          saveBlob(blob, `photo-${timestamp()}.jpg`);
+          const photo = await captureFrame();
+          savePhoto(photo);
           statusText.textContent = '保存しました';
           hint.textContent = '写真を端末に保存しました';
           notify('写真を保存しました');
         } catch (error) {
           statusText.textContent = '撮影できません';
-          hint.textContent = 'もう一度撮影ボタンを押してください';
-          if (!toast.classList.contains('show')) notify(error.message || '写真を撮影できませんでした。');
+          hint.textContent = error.message || 'もう一度お試しください';
+          notify(hint.textContent);
         } finally {
-          if (stream) stream.getTracks().forEach(track => track.stop());
-          stream = null;
           photoButton.disabled = false;
+          switchButton.disabled = false;
+          busy = false;
         }
       });
 
       switchButton.addEventListener('click', () => {
+        if (busy) return;
         facingMode = facingMode === 'environment' ? 'user' : 'environment';
         document.querySelector('#cameraLabel').textContent = facingMode === 'environment' ? '背面カメラ' : '前面カメラ';
-        notify(facingMode === 'environment' ? '背面カメラを選択しました' : '前面カメラを選択しました');
       });
     })();
   </script>
