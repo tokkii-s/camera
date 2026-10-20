@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#08090b">
+  <title>Camera</title>
+  <style>
+    :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #08090b; color: #f7f7f8; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; margin: 0; }
+    body { min-height: 100svh; min-height: 100dvh; overflow: hidden; }
+    button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .app { position: relative; width: 100%; height: 100svh; height: 100dvh; min-height: 420px; overflow: hidden; background: #08090b; }
+    .preview { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, #20232a 0, #101115 42%, #08090b 78%); }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    video.mirrored { transform: scaleX(-1); }
+    .placeholder { position: absolute; max-width: 290px; padding: 24px; text-align: center; color: #c1c2c8; line-height: 1.7; }
+    .placeholder strong { display: block; margin-bottom: 6px; color: white; font-size: 18px; }
+    .topbar { position: absolute; inset: 0 0 auto; display: flex; align-items: center; justify-content: space-between; padding: max(18px, env(safe-area-inset-top)) 20px 18px; background: linear-gradient(#0008, transparent); }
+    .brand { font-size: 13px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; }
+    .status { display: inline-flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px; border: 1px solid #ffffff26; border-radius: 999px; background: #090a0d75; font-size: 12px; color: #e1e1e4; backdrop-filter: blur(12px); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #888; }
+    .status.live .dot { background: #65d99b; box-shadow: 0 0 10px #65d99b99; }
+    .status.recording .dot { background: #ff454f; box-shadow: 0 0 10px #ff454f99; animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: .35; } }
+    .bottom { position: absolute; inset: auto 0 0; padding: 22px 20px max(24px, env(safe-area-inset-bottom)); background: linear-gradient(transparent, #000a 28%, #000c); }
+    .hint { min-height: 20px; margin: 0 0 17px; text-align: center; color: #d1d1d5; font-size: 12px; }
+    .controls { display: flex; align-items: center; justify-content: center; gap: clamp(18px, 6vw, 44px); }
+    .tool { display: grid; justify-items: center; gap: 7px; min-width: 58px; padding: 0; border: 0; background: none; color: #f5f5f7; }
+    .tool-icon { display: grid; place-items: center; width: 48px; height: 48px; border: 1px solid #ffffff30; border-radius: 50%; background: #ffffff17; backdrop-filter: blur(12px); transition: transform .15s, background .15s; }
+    .tool:active .tool-icon, .capture:active { transform: scale(.94); }
+    .tool-label { font-size: 11px; }
+    .capture { display: grid; place-items: center; width: 76px; height: 76px; padding: 0; border: 4px solid #ffffffd9; border-radius: 50%; background: #ffffff20; transition: transform .15s; }
+    .capture span { width: 58px; height: 58px; border-radius: 50%; background: #fff; }
+    .capture:disabled, .tool:disabled { opacity: .42; cursor: default; }
+    .record-button .tool-icon { width: 54px; height: 54px; }
+    .record-shape { width: 19px; height: 19px; border-radius: 50%; background: #ff4853; }
+    .record-button.active .record-shape { border-radius: 5px; }
+    .record-button.active .tool-icon { border-color: #ff485377; }
+    .switch-icon { font-size: 23px; line-height: 1; }
+    .toast { position: absolute; top: max(75px, calc(env(safe-area-inset-top) + 65px)); left: 50%; max-width: calc(100% - 36px); padding: 10px 14px; border: 1px solid #ffffff20; border-radius: 12px; background: #111319e8; color: #fff; font-size: 13px; line-height: 1.5; text-align: center; opacity: 0; transform: translate(-50%, -6px); pointer-events: none; transition: opacity .2s, transform .2s; }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+    @media (min-width: 700px) { .app { max-width: 540px; height: min(100dvh, 960px); margin: 0 auto; border-inline: 1px solid #22252b; } body { background: #141519; } }
+    @media (max-height: 540px) { .bottom { padding-top: 10px; } .hint { margin-bottom: 8px; } .capture { width: 62px; height: 62px; } .capture span { width: 46px; height: 46px; } }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="preview" aria-label="カメラプレビュー">
+      <video id="preview" autoplay playsinline muted></video>
+      <div class="placeholder" id="placeholder"><strong>カメラを起動</strong>下のボタンを押して、カメラへのアクセスを許可してください。</div>
+    </section>
+    <header class="topbar">
+      <div class="brand">Camera</div>
+      <div class="status" id="status"><span class="dot"></span><span id="statusText">未接続</span></div>
+    </header>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <footer class="bottom">
+      <p class="hint" id="hint">撮影した写真・動画はこの端末に保存されます</p>
+      <div class="controls">
+        <button class="tool" id="startButton" type="button" aria-label="カメラを起動">
+          <span class="tool-icon"><span class="switch-icon">⏻</span></span><span class="tool-label">起動</span>
+        </button>
+        <button class="capture" id="photoButton" type="button" aria-label="写真を撮影" disabled><span></span></button>
+        <button class="tool record-button" id="recordButton" type="button" aria-label="録画を開始" disabled>
+          <span class="tool-icon"><span class="record-shape"></span></span><span class="tool-label" id="recordLabel">録画</span>
+        </button>
+        <button class="tool" id="switchButton" type="button" aria-label="カメラを切り替え" disabled>
+          <span class="tool-icon"><span class="switch-icon">↻</span></span><span class="tool-label">切替</span>
+        </button>
+      </div>
+    </footer>
+  </main>
+  <canvas id="canvas" hidden></canvas>
+  <script>
+    (() => {
+      const video = document.querySelector('#preview');
+      const placeholder = document.querySelector('#placeholder');
+      const photoButton = document.querySelector('#photoButton');
+      const recordButton = document.querySelector('#recordButton');
+      const recordLabel = document.querySelector('#recordLabel');
+      const switchButton = document.querySelector('#switchButton');
+      const startButton = document.querySelector('#startButton');
+      const status = document.querySelector('#status');
+      const statusText = document.querySelector('#statusText');
+      const hint = document.querySelector('#hint');
+      const toast = document.querySelector('#toast');
+      const canvas = document.querySelector('#canvas');
+      let stream = null;
+      let facingMode = 'environment';
+      let recorder = null;
+      let chunks = [];
+      let toastTimer;
+
+      function notify(message) {
+        toast.textContent = message;
+        toast.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toast.classList.remove('show'), 3600);
+      }
+
+      function setLive(isLive) {
+        status.classList.toggle('live', isLive);
+        statusText.textContent = isLive ? '撮影できます' : '未接続';
+        placeholder.hidden = isLive;
+        photoButton.disabled = !isLive;
+        recordButton.disabled = !isLive || !window.MediaRecorder;
+        switchButton.disabled = !isLive;
+        startButton.querySelector('.tool-label').textContent = isLive ? '停止' : '起動';
+        startButton.setAttribute('aria-label', isLive ? 'カメラを停止' : 'カメラを起動');
+        hint.textContent = isLive ? '撮影した写真・動画はこの端末に保存されます' : 'カメラを起動するにはHTTPSまたはlocalhostで開いてください';
+      }
+
+      async function startCamera() {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          notify('このブラウザではカメラを利用できません。HTTPSで開いてください。');
+          return;
+        }
+        try {
+          const nextStream = await navigator.mediaDevices.getUserMedia({
+            audio: false,
+            video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+          });
+          if (stream) stream.getTracks().forEach(track => track.stop());
+          stream = nextStream;
+          video.srcObject = stream;
+          video.classList.toggle('mirrored', facingMode === 'user');
+          await video.play();
+          setLive(true);
+        } catch (error) {
+          const message = error.name === 'NotAllowedError'
+            ? 'カメラへのアクセスが許可されていません。ブラウザの設定を確認してください。'
+            : error.name === 'NotFoundError'
+              ? '利用できるカメラが見つかりませんでした。'
+              : 'カメラを起動できませんでした。HTTPS接続とブラウザの権限を確認してください。';
+          notify(message);
+        }
+      }
+
+      function stopCamera() {
+        if (recorder?.state === 'recording') recorder.stop();
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        stream = null;
+        video.srcObject = null;
+        setLive(false);
+      }
+
+      function saveBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.style.display = 'none';
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      }
+
+      function timestamp() {
+        const d = new Date();
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+      }
+
+      photoButton.addEventListener('click', () => {
+        if (!stream || !video.videoWidth) return;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext('2d');
+        if (facingMode === 'user') {
+          context.translate(canvas.width, 0);
+          context.scale(-1, 1);
+        }
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(blob => {
+          if (!blob) return notify('写真を保存できませんでした。');
+          saveBlob(blob, `photo-${timestamp()}.jpg`);
+          notify('写真を保存しました');
+        }, 'image/jpeg', 0.94);
+      });
+
+      function supportedMimeType() {
+        if (!window.MediaRecorder?.isTypeSupported) return '';
+        return ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp8', 'video/webm']
+          .find(type => MediaRecorder.isTypeSupported(type)) || '';
+      }
+
+      recordButton.addEventListener('click', () => {
+        if (!stream) return;
+        if (recorder?.state === 'recording') {
+          recorder.stop();
+          return;
+        }
+        if (!window.MediaRecorder) return notify('このブラウザは動画録画に対応していません。');
+        const mimeType = supportedMimeType();
+        if (MediaRecorder.isTypeSupported && !mimeType) return notify('対応する動画形式が見つかりませんでした。');
+        try {
+          chunks = [];
+          recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+          recorder.addEventListener('dataavailable', event => { if (event.data?.size) chunks.push(event.data); });
+          recorder.addEventListener('stop', () => {
+            const type = recorder.mimeType || mimeType || 'video/mp4';
+            const ext = type.includes('webm') ? 'webm' : 'mp4';
+            const blob = new Blob(chunks, { type });
+            if (blob.size) {
+              saveBlob(blob, `video-${timestamp()}.${ext}`);
+              notify('動画を保存しました');
+            } else notify('動画データがありませんでした。');
+            chunks = [];
+            recordButton.classList.remove('active');
+            recordLabel.textContent = '録画';
+            status.classList.remove('recording');
+            statusText.textContent = stream ? '撮影できます' : '未接続';
+            recordButton.setAttribute('aria-label', '録画を開始');
+          });
+          recorder.start(1000);
+          recordButton.classList.add('active');
+          recordLabel.textContent = '停止';
+          recordButton.setAttribute('aria-label', '録画を停止');
+          status.classList.add('recording');
+          statusText.textContent = '録画中';
+          notify('録画を開始しました');
+        } catch (error) {
+          notify('録画を開始できませんでした。このブラウザの対応形式を確認してください。');
+        }
+      });
+
+      switchButton.addEventListener('click', async () => {
+        if (recorder?.state === 'recording') {
+          notify('カメラを切り替えるには録画を停止してください。');
+          return;
+        }
+        facingMode = facingMode === 'environment' ? 'user' : 'environment';
+        await startCamera();
+      });
+      startButton.addEventListener('click', () => stream ? stopCamera() : startCamera());
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden && recorder?.state === 'recording') recorder.stop();
+      });
+      setLive(false);
+    })();
+  </script>
+</body>
+</html>
