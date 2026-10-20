@@ -114,27 +114,56 @@
 
       async function startCamera() {
         if (!navigator.mediaDevices?.getUserMedia) {
-          notify('このブラウザではカメラを利用できません。HTTPSで開いてください。');
+          notify('カメラAPIを利用できません。SafariではHTTPSまたはlocalhostで開いてください。');
           return;
         }
+        if (!window.isSecureContext && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+          notify('このページは安全な接続ではありません。HTTPSまたはlocalhostで開いてください。');
+          return;
+        }
+        let nextStream;
         try {
-          const nextStream = await navigator.mediaDevices.getUserMedia({
+          nextStream = await navigator.mediaDevices.getUserMedia({
             audio: false,
             video: { facingMode: { ideal: facingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }
           });
-          if (stream) stream.getTracks().forEach(track => track.stop());
-          stream = nextStream;
-          video.srcObject = stream;
-          video.classList.toggle('mirrored', facingMode === 'user');
-          await video.play();
-          setLive(true);
-        } catch (error) {
+        } catch (firstError) {
+          // Some iOS Safari versions reject ideal constraints even when the camera is available.
+          // Retry with the least restrictive request before reporting an error.
+          if (firstError.name === 'OverconstrainedError' || firstError.name === 'NotFoundError') {
+            try {
+              nextStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+            } catch (error) {
+              const message = error.name === 'NotAllowedError'
+                ? 'カメラ権限を確認できませんでした。iPhoneの「設定 > Safari > カメラ」と、SafariのWebサイト設定でカメラを「許可」にしてください。'
+                : `カメラを起動できませんでした（${error.name || 'unknown'}）。`;
+              notify(message);
+              return;
+            }
+          } else {
+            const error = firstError;
           const message = error.name === 'NotAllowedError'
-            ? 'カメラへのアクセスが許可されていません。ブラウザの設定を確認してください。'
+            ? 'カメラ権限は取得できませんでした。Safariの「設定 > Safari > カメラ」と、このサイトのWebサイト設定を確認してください。'
             : error.name === 'NotFoundError'
               ? '利用できるカメラが見つかりませんでした。'
-              : 'カメラを起動できませんでした。HTTPS接続とブラウザの権限を確認してください。';
+              : error.name === 'SecurityError'
+                ? '安全でないページからはカメラを利用できません。HTTPSまたはlocalhostで開いてください。'
+                : `カメラを起動できませんでした（${error.name || 'unknown'}）。`;
           notify(message);
+          return;
+          }
+        }
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        stream = nextStream;
+        video.srcObject = stream;
+        video.classList.toggle('mirrored', facingMode === 'user');
+        setLive(true);
+        try {
+          await video.play();
+        } catch (error) {
+          // Safari may delay autoplay until the video element has metadata.
+          // The stream is already authorized and active, so keep the controls enabled.
+          notify('カメラは接続されています。画面を一度タップすると映像が表示されます。');
         }
       }
 
