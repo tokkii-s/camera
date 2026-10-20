@@ -161,41 +161,25 @@
         video.autoplay = true;
         video.classList.toggle('mirrored', facingMode === 'user');
         try {
-          await waitForVideoEvent('loadedmetadata', 8000);
+          // Start playback immediately after attaching the stream. iOS Safari can
+          // defer metadata events for live MediaStreams until playback is requested.
           await video.play();
-          await waitForLiveFrame(8000);
+          await waitForLiveFrame(10000);
           setLive(true);
         } catch (error) {
           setLive(false);
-          notify(`カメラは接続しましたが映像が更新されません（${error.message || error.name || '再生エラー'}）。Safariでページを開き直してください。`);
+          const track = stream?.getVideoTracks()[0];
+          const diagnostics = `状態:${error.name || error.message || '再生エラー'} / video:${video.videoWidth}x${video.videoHeight} / readyState:${video.readyState} / track:${track?.readyState || 'なし'}`;
+          hint.textContent = diagnostics;
+          notify(`カメラは接続しましたが映像を開始できません。${diagnostics}`);
         }
-      }
-
-      function waitForVideoEvent(eventName, timeoutMs) {
-        if (eventName === 'loadedmetadata' && video.readyState >= HTMLMediaElement.HAVE_METADATA) return Promise.resolve();
-        return new Promise((resolve, reject) => {
-          const timer = setTimeout(() => {
-            cleanup();
-            reject(new Error(`${eventName}-timeout`));
-          }, timeoutMs);
-          const cleanup = () => {
-            clearTimeout(timer);
-            video.removeEventListener(eventName, onReady);
-            video.removeEventListener('error', onError);
-          };
-          const onReady = () => { cleanup(); resolve(); };
-          const onError = () => { cleanup(); reject(new Error('video-error')); };
-          video.addEventListener(eventName, onReady, { once: true });
-          video.addEventListener('error', onError, { once: true });
-        });
       }
 
       async function waitForLiveFrame(timeoutMs) {
         const startTime = performance.now();
-        let previousTime = video.currentTime;
         while (performance.now() - startTime < timeoutMs) {
-          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.currentTime > previousTime) return;
-          previousTime = video.currentTime;
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && !video.paused) return;
+          if (video.error) throw new Error(`video-error-${video.error.code}`);
           await new Promise(resolve => setTimeout(resolve, 120));
         }
         throw new Error('frame-timeout');
