@@ -13,7 +13,7 @@
     button { font: inherit; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
     .app { position: relative; width: 100%; height: 100svh; height: 100dvh; min-height: 420px; overflow: hidden; background: #08090b; }
     .preview { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, #20232a 0, #101115 42%, #08090b 78%); }
-    video { width: 100%; height: 100%; object-fit: cover; }
+    video { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; background: #08090b; }
     video.mirrored { transform: scaleX(-1); }
     .placeholder { position: absolute; max-width: 290px; padding: 24px; text-align: center; color: #c1c2c8; line-height: 1.7; }
     .placeholder strong { display: block; margin-bottom: 6px; color: white; font-size: 18px; }
@@ -156,20 +156,49 @@
         if (stream) stream.getTracks().forEach(track => track.stop());
         stream = nextStream;
         video.srcObject = stream;
+        video.muted = true;
+        video.playsInline = true;
+        video.autoplay = true;
         video.classList.toggle('mirrored', facingMode === 'user');
         try {
-          if (video.readyState < HTMLMediaElement.HAVE_METADATA) {
-            await new Promise((resolve, reject) => {
-              const timer = setTimeout(() => reject(new Error('metadata-timeout')), 5000);
-              video.addEventListener('loadedmetadata', () => { clearTimeout(timer); resolve(); }, { once: true });
-            });
-          }
+          await waitForVideoEvent('loadedmetadata', 8000);
           await video.play();
+          await waitForLiveFrame(8000);
           setLive(true);
         } catch (error) {
           setLive(false);
-          notify('カメラは許可されましたが、映像を再生できませんでした。画面をタップしてもう一度お試しください。');
+          notify(`カメラは接続しましたが映像が更新されません（${error.message || error.name || '再生エラー'}）。Safariでページを開き直してください。`);
         }
+      }
+
+      function waitForVideoEvent(eventName, timeoutMs) {
+        if (eventName === 'loadedmetadata' && video.readyState >= HTMLMediaElement.HAVE_METADATA) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            cleanup();
+            reject(new Error(`${eventName}-timeout`));
+          }, timeoutMs);
+          const cleanup = () => {
+            clearTimeout(timer);
+            video.removeEventListener(eventName, onReady);
+            video.removeEventListener('error', onError);
+          };
+          const onReady = () => { cleanup(); resolve(); };
+          const onError = () => { cleanup(); reject(new Error('video-error')); };
+          video.addEventListener(eventName, onReady, { once: true });
+          video.addEventListener('error', onError, { once: true });
+        });
+      }
+
+      async function waitForLiveFrame(timeoutMs) {
+        const startTime = performance.now();
+        let previousTime = video.currentTime;
+        while (performance.now() - startTime < timeoutMs) {
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0 && video.currentTime > previousTime) return;
+          previousTime = video.currentTime;
+          await new Promise(resolve => setTimeout(resolve, 120));
+        }
+        throw new Error('frame-timeout');
       }
 
       function stopCamera() {
@@ -199,11 +228,15 @@
       }
 
       photoButton.addEventListener('click', () => {
-        if (!stream || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) {
+        if (!stream || video.paused || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) {
           notify('映像の準備中です。少し待ってから撮影してください。');
           return;
         }
         const drawLatestFrame = () => {
+        if (video.paused || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || !video.videoWidth) {
+          notify('カメラ映像が停止しています。再起動してから撮影してください。');
+          return;
+        }
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const context = canvas.getContext('2d');
